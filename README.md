@@ -5,7 +5,9 @@
 ## 快速开始
 
 ```bash
-cd E:\Claude\AICP
+git clone https://github.com/Userjackk/lottery-ai.git
+cd lottery-ai
+pip install -r requirements.txt
 
 # 首次使用（抓取历史数据，约需1分钟）
 python main.py init
@@ -125,7 +127,7 @@ AICP/
 - torch（可选，仅 LSTM 需要）
 
 ```bash
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install -r requirements.txt
 ```
 
 ## 重要说明
