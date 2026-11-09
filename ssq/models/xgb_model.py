@@ -33,20 +33,26 @@ class XGBPredictor:
         }
 
         def _train_one(i, y_all, pos_weight, is_val_valid):
-            model = XGBClassifier(
-                **base_params,
-                eval_metric="logloss",
-                verbosity=0,
-                n_jobs=-1,
-                scale_pos_weight=pos_weight,
-                early_stopping_rounds=20,
-            )
-            y_train = y_all[:split, i]
-            y_val = y_all[split:, i]
             if is_val_valid[i]:
-                model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+                model = XGBClassifier(
+                    **base_params,
+                    eval_metric="logloss",
+                    verbosity=0,
+                    n_jobs=-1,
+                    scale_pos_weight=pos_weight,
+                    early_stopping_rounds=20,
+                )
+                model.fit(X_train, y_all[:split, i], eval_set=[(X_val, y_all[split:, i])], verbose=False)
             else:
-                model.fit(X_train, y_train, verbose=False)
+                # 验证集缺正/负样本时无法早停，去掉 early_stopping_rounds 否则 XGBoost 报错
+                model = XGBClassifier(
+                    **base_params,
+                    eval_metric="logloss",
+                    verbosity=0,
+                    n_jobs=-1,
+                    scale_pos_weight=pos_weight,
+                )
+                model.fit(X_train, y_all[:split, i], verbose=False)
             return model
 
         # 预计算验证集是否有效（正负样本都存在）

@@ -3,9 +3,13 @@ from .config import RED_MAX, BLUE_MAX, RED_COUNT
 from .features import build_feature_matrix, build_next_features
 from .models.baseline import BaselineModel
 from .models.xgb_model import XGBPredictor
-from .models.lstm_model import LSTMPredictor
+from .models.lstm_model import LSTMPredictor, build_lstm_input
 from .models.ensemble import EnsembleModel
 from . import db
+
+# 缓存键 v2：区别于对齐修复前的旧口径缓存（旧模型特征/标签错位，不得复用）
+XGB_CACHE_KEY = "xgb_v2"
+LSTM_CACHE_KEY = "lstm_v2"
 
 
 class Predictor:
@@ -33,8 +37,8 @@ class Predictor:
         latest = self.draws[-1]["draw_no"]
 
         # 尝试加载XGBoost
-        cached_xgb = db.load_model("xgb")
-        cached_lstm = db.load_model("lstm")
+        cached_xgb = db.load_model(XGB_CACHE_KEY)
+        cached_lstm = db.load_model(LSTM_CACHE_KEY)
 
         if cached_xgb and cached_xgb[0] == latest:
             self.xgb.deserialize(cached_xgb[1])
@@ -53,11 +57,9 @@ class Predictor:
         print("  构建特征矩阵...")
         X, y_red, y_blue = self._get_features()
 
-        # 时间序列分割：最后50期做测试
+        # 生产模型用全部已知数据训练（回测评估另用扣除 holdout 的临时模型，见 _backtest）
+        X_train, y_red_train, y_blue_train = X, y_red, y_blue
         test_size = min(50, len(X) // 5)
-        X_train = X[:-test_size]
-        y_red_train = y_red[:-test_size]
-        y_blue_train = y_blue[:-test_size]
         X_test = X[-test_size:]
         y_red_test = y_red[-test_size:]
         y_blue_test = y_blue[-test_size:]
@@ -73,9 +75,9 @@ class Predictor:
 
         # 缓存模型
         latest = self.draws[-1]["draw_no"]
-        db.save_model("xgb", latest, self.xgb.serialize())
+        db.save_model(XGB_CACHE_KEY, latest, self.xgb.serialize())
         if self.lstm.model is not None:
-            db.save_model("lstm", latest, self.lstm.serialize())
+            db.save_model(LSTM_CACHE_KEY, latest, self.lstm.serialize())
 
         # 回测评估
         self._backtest(X_test, y_red_test, y_blue_test,
@@ -120,12 +122,13 @@ class Predictor:
             red_xgb, blue_xgb = eval_xgb.predict_proba(X_test[i:i+1])
             predictions["xgboost"] = (red_xgb, blue_xgb)
 
-            # LSTM 用测试点之前的特征序列
-            feat_start = split_idx + i
-            seq_start = max(0, feat_start - self.lstm.seq_len)
-            feat_seq = X_all[seq_start:feat_start + 1]
-            red_lstm, blue_lstm = eval_lstm.predict_proba(feat_seq)
-            predictions["lstm"] = (red_lstm, blue_lstm)
+            # LSTM 用测试点之前的特征序列（序列末端=测试点特征行，与标签对齐）
+            if eval_lstm.model is not None and eval_lstm._available:
+                feat_start = split_idx + i
+                seq_start = max(0, feat_start - self.lstm.seq_len + 1)
+                feat_seq = X_all[seq_start:feat_start + 1]
+                red_lstm, blue_lstm = eval_lstm.predict_proba(feat_seq)
+                predictions["lstm"] = (red_lstm, blue_lstm)
 
             red_comb, blue_comb = self.ensemble.combine(predictions)
 
@@ -146,31 +149,35 @@ class Predictor:
         print(f"  蓝球命中率: {blue_hits.mean()*100:.1f}% (理论期望: {100/16:.1f}%)")
         print()
 
-    def predict(self, n: int = 3) -> list[dict]:
-        """生成n组推荐号码"""
-        if not self._trained:
-            raise RuntimeError("模型未训练，请先调用 train() 或 load_or_train()")
-
-        # 特征缓存
-        X, _, _ = self._get_features()
-
-        # 下一期特征
-        X_next = build_next_features(self.draws)
-
-        # 获取各模型预测
+    def _collect_predictions(self, X_next: np.ndarray) -> dict:
+        """收集各模型预测概率；LSTM 不可用（未训练/torch缺失）时排除，不让 uniform 稀释融合"""
         predictions = {}
 
         red_base, blue_base = self.baseline.predict_proba()
         predictions["baseline"] = (red_base, blue_base)
 
-        red_xgb, blue_xgb = self.xgb.predict_proba(X_next)
-        predictions["xgboost"] = (red_xgb, blue_xgb)
+        if len(getattr(self.xgb, "red_models", [])) > 0:
+            red_xgb, blue_xgb = self.xgb.predict_proba(X_next)
+            predictions["xgboost"] = (red_xgb, blue_xgb)
 
-        # LSTM 用最近 seq_len 期特征向量
-        red_lstm, blue_lstm = self.lstm.predict_proba(X)
-        predictions["lstm"] = (red_lstm, blue_lstm)
+        if getattr(self.lstm, "model", None) is not None and self.lstm._available:
+            # LSTM 输入序列以最新一期特征结尾，与预测目标对齐
+            X, _, _ = self._get_features()
+            red_lstm, blue_lstm = self.lstm.predict_proba(build_lstm_input(X, self.draws, self.lstm.seq_len))
+            predictions["lstm"] = (red_lstm, blue_lstm)
 
-        # 融合
+        return predictions
+
+    def predict(self, n: int = 3) -> list[dict]:
+        """生成n组推荐号码"""
+        if not self._trained:
+            raise RuntimeError("模型未训练，请先调用 train() 或 load_or_train()")
+
+        # 下一期特征
+        X_next = build_next_features(self.draws)
+
+        # 获取各模型预测并融合
+        predictions = self._collect_predictions(X_next)
         red_final, blue_final = self.ensemble.combine(predictions)
 
         # 生成推荐

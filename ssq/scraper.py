@@ -1,6 +1,7 @@
 import time
 import requests
-from .config import DATA_URL, DATA_HEADERS, REQUEST_TIMEOUT, RETRY_COUNT, RETRY_DELAY
+from .config import DATA_URL, DATA_HEADERS, REQUEST_TIMEOUT, RETRY_COUNT, RETRY_DELAY, RED_COUNT, RED_MAX, BLUE_MAX
+from .validation import validate_draw
 
 
 def fetch_page(page_no: int = 1, page_size: int = 2000) -> list[dict]:
@@ -12,6 +13,7 @@ def fetch_page(page_no: int = 1, page_size: int = 2000) -> list[dict]:
         "pageSize": page_size,
         "systemType": "PC",
     }
+    last_error = None
     for attempt in range(RETRY_COUNT):
         try:
             resp = requests.get(
@@ -20,11 +22,11 @@ def fetch_page(page_no: int = 1, page_size: int = 2000) -> list[dict]:
             resp.raise_for_status()
             data = resp.json()
             return _parse_results(data.get("result", []))
-        except (requests.RequestException, ValueError) as e:
+        except Exception as e:
+            last_error = e
             if attempt < RETRY_COUNT - 1:
                 time.sleep(RETRY_DELAY)
-            else:
-                raise RuntimeError(f"抓取数据失败: {e}")
+    raise RuntimeError(f"抓取数据失败: {last_error}")
 
 
 def _parse_results(results: list[dict]) -> list[dict]:
@@ -33,8 +35,18 @@ def _parse_results(results: list[dict]) -> list[dict]:
         code = r.get("code", "")
         red_str = r.get("red", "")
         blue_str = r.get("blue", "")
-        reds = sorted(int(x) for x in red_str.split(","))
-        draws.append({
+        if not red_str or not blue_str:
+            continue
+        try:
+            reds = sorted(int(x) for x in red_str.split(","))
+            blue = int(blue_str)
+        except ValueError:
+            continue
+        if len(reds) != RED_COUNT:
+            continue
+        if any(not (1 <= x <= RED_MAX) for x in reds) or not (1 <= blue <= BLUE_MAX):
+            continue
+        draw = {
             "draw_no": code,
             "date": r.get("date", "")[:10],
             "red1": reds[0],
@@ -43,8 +55,10 @@ def _parse_results(results: list[dict]) -> list[dict]:
             "red4": reds[3],
             "red5": reds[4],
             "red6": reds[5],
-            "blue": int(blue_str),
-        })
+            "blue": blue,
+        }
+        if validate_draw(draw):
+            draws.append(draw)
     return draws
 
 

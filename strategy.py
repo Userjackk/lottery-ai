@@ -1,10 +1,4 @@
 """策略选号：基于统计约束生成"合理"组合，不做概率预测"""
-import sys
-import io
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-
 import numpy as np
 from collections import Counter
 from itertools import combinations

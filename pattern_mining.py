@@ -1,10 +1,4 @@
 """规律挖掘：从历史数据中寻找非随机的可利用模式"""
-import sys
-import io
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-
 import numpy as np
 from collections import Counter, defaultdict
 from itertools import combinations

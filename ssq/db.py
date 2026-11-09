@@ -1,6 +1,7 @@
 import sqlite3
 from contextlib import contextmanager
 from .config import DB_PATH, DATA_DIR
+from .validation import validate_draw
 
 
 @contextmanager
@@ -44,7 +45,7 @@ def insert_draws(draws: list[dict]) -> int:
         return 0
     with get_conn() as conn:
         existing = {row[0] for row in conn.execute("SELECT draw_no FROM draws")}
-        new = [d for d in draws if d["draw_no"] not in existing]
+        new = [d for d in draws if validate_draw(d) and d["draw_no"] not in existing]
         if not new:
             return 0
         conn.executemany(

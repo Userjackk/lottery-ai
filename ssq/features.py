@@ -180,4 +180,22 @@ def _extract_vectorized(
     features.append(float(np.std(blue_omits) / n))
     features.append(float(np.std(red_omits) / n))
 
+    # === 扩展全局特征：跨度 + AC值 ===
+    prev_sorted = sorted(prev)
+    span = prev_sorted[-1] - prev_sorted[0]
+    features.append(span / RED_MAX)
+
+    ac_value = _ac_value(prev_sorted)
+    features.append(ac_value / (RED_MAX - RED_COUNT))  # 归一化到 [0,1] 左右
+
     return np.array(features, dtype=np.float32)
+
+
+def _ac_value(reds: list[int]) -> int:
+    """计算 AC 值（Arithmetic Complexity）：任意两数差的种类数 - 5
+
+    双色球标准 AC 值 = 不同差值个数 - 5，范围 0 ~ 27。
+    """
+    from itertools import combinations
+    diffs = {b - a for a, b in combinations(reds, 2)}
+    return len(diffs) - (RED_COUNT - 1)

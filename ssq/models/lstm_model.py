@@ -9,6 +9,7 @@ except ImportError:
     HAS_TORCH = False
 
 from ..config import RED_MAX, BLUE_MAX
+from ..features import build_next_features
 
 
 if HAS_TORCH:
@@ -23,6 +24,39 @@ if HAS_TORCH:
             out, _ = self.lstm(x)
             last = out[:, -1, :]
             return self.red_head(last), self.blue_head(last)
+
+
+def build_lstm_sequences(X_feat: np.ndarray, y_red: np.ndarray, y_blue: np.ndarray,
+                         seq_len: int):
+    """构建 LSTM 序列：序列以行 i 结尾、以 y[i] 为标签（特征到 D 期 → 预测 D+1 期）
+
+    Args:
+        X_feat: (n_samples, n_features) 特征矩阵，每行对应一期
+        y_red / y_blue: (n_samples, ...) 每行的标签
+        seq_len: 序列长度
+
+    Returns:
+        X_seq: (n_seq, seq_len, n_features)
+        y_red / y_blue: (n_seq, ...)
+    """
+    n_samples = len(X_feat)
+    X_seq, y_r, y_b = [], [], []
+    for i in range(seq_len - 1, n_samples):
+        X_seq.append(X_feat[i - seq_len + 1:i + 1])
+        y_r.append(y_red[i])
+        y_b.append(y_blue[i])
+    return np.array(X_seq, dtype=np.float32), np.array(y_r), np.array(y_b)
+
+
+def build_lstm_input(X_feat: np.ndarray, draws: list[dict], seq_len: int) -> np.ndarray:
+    """构建预测用的 LSTM 输入序列：最近 seq_len 行特征 + 下一期特征结尾
+
+    序列 = [..., X_feat[n-1], X_next]，其中 X_feat[n-1] 是最新一期，
+    X_next 是 build_next_features 的输出，保证预测目标与序列末端对齐。
+    """
+    next_feat = build_next_features(draws)
+    rows = list(X_feat[-(seq_len - 1):]) + [next_feat[0]]
+    return np.array(rows, dtype=np.float32)
 
 
 class LSTMPredictor:
@@ -72,12 +106,8 @@ class LSTMPredictor:
         if n_samples < self.seq_len + 50:
             return
 
-        # 构建序列：用 seq_len 个连续特征向量作为输入，下一期标签作为目标
-        X_seq, y_r, y_b = [], [], []
-        for i in range(self.seq_len, n_samples):
-            X_seq.append(X_feat[i - self.seq_len:i])
-            y_r.append(y_red[i])
-            y_b.append(y_blue[i])
+        # 构建序列：seq_len 个连续特征向量（到行 i 结束）→ 预测第 i 期标签
+        X_seq, y_r, y_b = build_lstm_sequences(X_feat, y_red, y_blue, self.seq_len)
 
         X_t = torch.tensor(np.array(X_seq), dtype=torch.float32)
         y_red_t = torch.tensor(np.array(y_r), dtype=torch.float32)
