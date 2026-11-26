@@ -7,6 +7,7 @@ from ssq.heat import (
     check_heat_uniformity, combo_features, has_arithmetic_pattern,
     heat_index, ols_hc1, quantile_groups,
 )
+from heat_analysis import format_feature_table, format_report
 
 _SAMPLE = {
     "code": "2026135", "date": "2026-11-24(二)", "red": "02,10,16,22,26,30", "blue": "08",
@@ -232,3 +233,44 @@ def test_check_heat_uniformity_ignores_nan():
     res = check_heat_uniformity(np.array([np.nan, 1.0, 1.0]))
     assert res["n"] == 2
     assert res["ok"] is True
+
+
+def _synthetic_rows(n=300, effect=0.0, seed=0):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(n):
+        small = float(rng.integers(0, 7))
+        row = {k: 0.0 for k in FEATURE_KEYS}
+        row.update({
+            "draw_no": f"2026{i:03d}", "sales": 400_000_000,
+            "n1": 5, "n2": 150, "h1": 1.0,
+            "h2": float(np.exp(effect * (small - 3) + rng.normal(scale=0.3))),
+            "small_count": small, "date_count": 5.0, "blue_small": 1.0,
+        })
+        rows.append(row)
+    return rows
+
+
+def test_format_feature_table_has_all_features_and_direction():
+    rows = _synthetic_rows(n=300, effect=0.4)
+    text = format_feature_table(rows, FEATURE_KEYS)
+    for k in FEATURE_KEYS:
+        assert k in text
+    assert "small_count" in text
+    # 效应方向要能看见符号
+    assert "+" in text
+
+
+def test_format_feature_table_marks_insignificant():
+    rows = _synthetic_rows(n=300, effect=0.0)
+    text = format_feature_table(rows, FEATURE_KEYS)
+    assert "不显著" in text
+
+
+def test_format_report_contains_uniformity_and_top_draws():
+    rows = _synthetic_rows(n=60, effect=0.2)
+    uniformity = {"mean": 1.02, "n": 60, "ok": True}
+    text = format_report(rows, uniformity, "TABLE", top_n=5)
+    assert "1.02" in text
+    assert "TABLE" in text
+    assert "2026" in text
