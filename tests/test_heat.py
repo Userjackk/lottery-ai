@@ -3,8 +3,9 @@ import numpy as np
 
 from ssq.prize_data import parse_prize_record
 from ssq.heat import (
-    FEATURE_KEYS, P1, P2, bh_correct, bootstrap_ci, combo_features,
-    has_arithmetic_pattern, heat_index, ols_hc1, quantile_groups,
+    FEATURE_KEYS, P1, P2, bh_correct, bootstrap_ci, build_dataset,
+    check_heat_uniformity, combo_features, has_arithmetic_pattern,
+    heat_index, ols_hc1, quantile_groups,
 )
 
 _SAMPLE = {
@@ -168,3 +169,66 @@ def test_bootstrap_ci_contains_mean():
     v = rng.normal(loc=1.5, size=200)
     lo, hi = bootstrap_ci(v, n_boot=1000, seed=42)
     assert lo < v.mean() < hi
+
+
+def _prize(draw_no, sales, n1, n2):
+    return {"draw_no": draw_no, "sales": sales, "poolmoney": 0,
+            "n1": n1, "m1": 0, "n2": n2, "m2": 0}
+
+
+def _draw(draw_no, reds, blue):
+    d = {"draw_no": draw_no, "date": "2026-01-01", "blue": blue}
+    for i, r in enumerate(reds, 1):
+        d[f"red{i}"] = r
+    return d
+
+
+def test_build_dataset_merges_and_computes_heat():
+    sales = int(2 / P2)
+    rows = build_dataset(
+        [_prize("2026001", sales, 1, 1)],
+        [_draw("2026001", [2, 10, 16, 22, 26, 30], 8)],
+    )
+    assert len(rows) == 1
+    r = rows[0]
+    assert abs(r["h2"] - 1.0) < 1e-3
+    assert abs(r["h1"] - P2 / P1) < 1e-3
+    assert r["small_count"] == 2.0
+    assert r["blue_small"] == 1.0
+
+
+def test_build_dataset_skips_unmatched_draw():
+    """奖级数据缺该期时跳过，不静默塞 0"""
+    rows = build_dataset(
+        [_prize("2026002", 400_000_000, 5, 100)],
+        [_draw("2026001", [1, 2, 3, 4, 5, 6], 1)],
+    )
+    assert rows == []
+
+
+def test_build_dataset_sets_repeat_prev_from_previous_draw():
+    sales = int(2 / P2)
+    rows = build_dataset(
+        [_prize("2026001", sales, 1, 1), _prize("2026002", sales, 1, 1)],
+        [_draw("2026001", [1, 2, 3, 4, 5, 6], 1),
+         _draw("2026002", [6, 7, 8, 9, 10, 11], 2)],
+    )
+    assert rows[0]["repeat_prev"] == 0.0
+    assert rows[1]["repeat_prev"] == 1.0
+
+
+def test_check_heat_uniformity_ok_when_mean_near_one():
+    res = check_heat_uniformity(np.array([0.9, 1.0, 1.1, 1.05]))
+    assert res["ok"] is True
+    assert res["n"] == 4
+
+
+def test_check_heat_uniformity_fails_when_mean_far():
+    res = check_heat_uniformity(np.array([2.0, 2.1, 1.9]))
+    assert res["ok"] is False
+
+
+def test_check_heat_uniformity_ignores_nan():
+    res = check_heat_uniformity(np.array([np.nan, 1.0, 1.0]))
+    assert res["n"] == 2
+    assert res["ok"] is True

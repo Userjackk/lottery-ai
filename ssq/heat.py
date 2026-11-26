@@ -151,3 +151,45 @@ def bootstrap_ci(values: np.ndarray, stat=np.mean, n_boot: int = 2000,
     boots = np.array([stat(v[i]) for i in idx])
     lo, hi = np.quantile(boots, [alpha / 2, 1 - alpha / 2])
     return float(lo), float(hi)
+
+
+def build_dataset(prize_rows: list[dict], draws: list[dict]) -> list[dict]:
+    """按 draw_no 内连接奖级数据与开奖数据，计算热度指数与组合特征"""
+    prize_by_no = {r["draw_no"]: r for r in prize_rows if r.get("sales")}
+    draw_by_no = {d["draw_no"]: d for d in draws}
+    common = sorted(set(prize_by_no) & set(draw_by_no))
+
+    ordered = sorted(draw_by_no)
+    prev_of = {no: (draw_by_no[ordered[i - 1]] if i > 0 else None)
+               for i, no in enumerate(ordered)}
+
+    rows = []
+    for no in common:
+        p = prize_by_no[no]
+        d = draw_by_no[no]
+        reds = [d[f"red{i}"] for i in range(1, 7)]
+        prev = prev_of[no]
+        prev_reds = [prev[f"red{i}"] for i in range(1, 7)] if prev else None
+
+        row = {
+            "draw_no": no,
+            "date": d.get("date", ""),
+            "sales": p["sales"],
+            "n1": p.get("n1"),
+            "n2": p.get("n2"),
+            "h1": heat_index(p.get("n1"), p["sales"], P1),
+            "h2": heat_index(p.get("n2"), p["sales"], P2),
+        }
+        row.update(combo_features(reds, d["blue"], prev_reds))
+        rows.append(row)
+    return rows
+
+
+def check_heat_uniformity(h2: np.ndarray, tolerance: float = 0.15) -> dict:
+    """均匀性自检：全体 H2 的均值应接近 1，否则说明口径有误"""
+    v = np.asarray(h2, dtype=float)
+    v = v[~np.isnan(v)]
+    if len(v) == 0:
+        return {"mean": float("nan"), "n": 0, "ok": False}
+    mean = float(v.mean())
+    return {"mean": mean, "n": int(len(v)), "ok": bool(abs(mean - 1) <= tolerance)}
