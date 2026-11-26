@@ -21,6 +21,9 @@ FEATURE_KEYS = [
     "has_arith3", "blue_small", "repeat_prev",
 ]
 
+# 阴性对照：由期号数字和推出的奇偶标志，与号码结构天然独立
+NEGATIVE_CONTROL = "ctrl_drawid_parity"
+
 
 def heat_index(n_prize: int | None, sales: int, p_win: float) -> float:
     """热度指数；缺中奖注数或销量无效时返回 nan"""
@@ -174,11 +177,14 @@ def build_dataset(prize_rows: list[dict], draws: list[dict]) -> list[dict]:
         row = {
             "draw_no": no,
             "date": d.get("date", ""),
+            "reds": reds,
+            "blue": d["blue"],
             "sales": p["sales"],
             "n1": p.get("n1"),
             "n2": p.get("n2"),
             "h1": heat_index(p.get("n1"), p["sales"], P1),
             "h2": heat_index(p.get("n2"), p["sales"], P2),
+            NEGATIVE_CONTROL: float(sum(int(c) for c in no if c.isdigit()) % 2),
         }
         row.update(combo_features(reds, d["blue"], prev_reds))
         rows.append(row)

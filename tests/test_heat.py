@@ -3,11 +3,11 @@ import numpy as np
 
 from ssq.prize_data import parse_prize_record
 from ssq.heat import (
-    FEATURE_KEYS, P1, P2, bh_correct, bootstrap_ci, build_dataset,
-    check_heat_uniformity, combo_features, has_arithmetic_pattern,
-    heat_index, ols_hc1, quantile_groups,
+    FEATURE_KEYS, NEGATIVE_CONTROL, P1, P2, bh_correct, bootstrap_ci,
+    build_dataset, check_heat_uniformity, combo_features,
+    has_arithmetic_pattern, heat_index, ols_hc1, quantile_groups,
 )
-from heat_analysis import format_feature_table, format_report
+from heat_analysis import format_conclusion, format_feature_table, format_report
 
 _SAMPLE = {
     "code": "2026135", "date": "2026-11-24(二)", "red": "02,10,16,22,26,30", "blue": "08",
@@ -243,9 +243,10 @@ def _synthetic_rows(n=300, effect=0.0, seed=0):
         row = {k: 0.0 for k in FEATURE_KEYS}
         row.update({
             "draw_no": f"2026{i:03d}", "sales": 400_000_000,
-            "n1": 5, "n2": 150, "h1": 1.0,
+            "n1": 5, "n2": 150, "h1": float(1.0 + rng.normal(scale=0.2)),
             "h2": float(np.exp(effect * (small - 3) + rng.normal(scale=0.3))),
             "small_count": small, "date_count": 5.0, "blue_small": 1.0,
+            "reds": [2, 10, 16, 22, 26, 30], "blue": 8,
         })
         rows.append(row)
     return rows
@@ -305,3 +306,68 @@ def test_feature_table_has_crosscheck_section():
     cross = text.split("### 交叉核对")[1]
     line = next(l for l in cross.splitlines() if l.startswith("| small_count |"))
     assert "一致" in line
+
+
+def test_build_dataset_carries_reds_and_blue():
+    rows = build_dataset(
+        [_prize("2026001", int(2 / P2), 1, 1)],
+        [_draw("2026001", [2, 10, 16, 22, 26, 30], 8)],
+    )
+    assert rows[0]["reds"] == [2, 10, 16, 22, 26, 30]
+    assert rows[0]["blue"] == 8
+
+
+def test_build_dataset_has_negative_control():
+    """阴性对照取自期号，与号码结构天然独立"""
+    rows = build_dataset([_prize("2026001", int(2 / P2), 1, 1)],
+                         [_draw("2026001", [2, 10, 16, 22, 26, 30], 8)])
+    assert NEGATIVE_CONTROL in rows[0]
+    assert rows[0][NEGATIVE_CONTROL] in (0.0, 1.0)
+
+
+def test_conclusion_reports_effect_multiplier_and_weak_flags():
+    stats = [
+        {"key": "small_count", "beta": 0.13, "p_adj": 0.001, "uni_p": 0.001,
+         "agree": True, "diff": 0.693, "ci": (0.5, 0.9), "judge": "显著(正)"},
+        {"key": "sum_value", "beta": 0.002, "p_adj": 0.01, "uni_p": 0.001,
+         "agree": False, "diff": -0.1, "ci": (-0.2, 0.0), "judge": "显著(正)"},
+        {"key": "has_arith3", "beta": 0.05, "p_adj": 0.03, "uni_p": 0.35,
+         "agree": True, "diff": 0.05, "ci": (-0.1, 0.2), "judge": "显著(正)"},
+    ]
+    text = format_conclusion(stats, {"mean": 1.009, "n": 2092, "ok": True})
+    assert "2.00" in text      # e^0.693，高档相对低档的热度倍数
+    assert "不可用" in text    # sum_value 单/多变量方向相反
+    assert "证据弱" in text    # has_arith3 单变量不显著
+
+
+def test_conclusion_mentions_negative_control():
+    stats = [{"key": NEGATIVE_CONTROL, "beta": 0.01, "p_adj": 0.8, "uni_p": 0.7,
+              "agree": True, "diff": 0.01, "ci": (-0.1, 0.1), "judge": "不显著"}]
+    text = format_conclusion(stats, {"mean": 1.0, "n": 100, "ok": True})
+    assert "阴性对照" in text
+    assert "期号" in text
+
+
+def test_conclusion_does_not_list_degenerate_diff_as_solid():
+    """分档退化（档间差为 NaN）时不得进入有证据清单，也不能输出 nan"""
+    stats = [{"key": "x", "beta": 0.05, "p_adj": 0.001, "uni_p": 0.001,
+              "agree": True, "diff": float("nan"),
+              "ci": (float("nan"), float("nan")),
+              "judge": "显著(正)", "means": ["—", "—", "—"]}]
+    text = format_conclusion(stats, {"mean": 1.0, "n": 100, "ok": True})
+    assert "nan" not in text.lower()
+    assert "x：分档退化" in text
+
+
+def test_format_report_includes_red_blue_and_correlation():
+    rows = _synthetic_rows(n=60, effect=0.2)
+    text = format_report(rows, {"mean": 1.02, "n": 60, "ok": True}, "TABLE", top_n=5)
+    assert "红球" in text and "蓝球" in text
+    assert "相关" in text
+
+
+def test_format_report_uses_given_conclusion():
+    rows = _synthetic_rows(n=60, effect=0.2)
+    text = format_report(rows, {"mean": 1.02, "n": 60, "ok": True}, "TABLE",
+                         top_n=5, conclusion="自定义结论")
+    assert "自定义结论" in text
