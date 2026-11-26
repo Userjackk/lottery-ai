@@ -7,6 +7,7 @@ from collections import Counter
 from math import comb
 
 import numpy as np
+from scipy import stats
 
 from .config import RED_MAX, BLUE_MAX, RED_COUNT
 
@@ -74,3 +75,79 @@ def combo_features(reds: list[int], blue: int,
         "blue_small": 1.0 if blue <= 12 else 0.0,
         "repeat_prev": float(len(set(rs) & set(prev_reds))) if prev_reds else 0.0,
     }
+
+
+def ols_hc1(X: np.ndarray, y: np.ndarray) -> dict:
+    """OLS + HC1 稳健标准误；自动前置截距。
+
+    方差为 0 的列不参与回归，其 beta 记 0、se/t/p 记 nan，不抛异常。
+    """
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n, k = X.shape
+
+    valid = np.std(X, axis=0) > 0
+    Xv = np.column_stack([np.ones(n), X[:, valid]])
+    k_v = Xv.shape[1]
+
+    xtx_inv = np.linalg.pinv(Xv.T @ Xv)
+    beta_v = xtx_inv @ Xv.T @ y
+    resid = y - Xv @ beta_v
+    meat = (Xv * resid[:, None] ** 2).T @ Xv
+    cov = xtx_inv @ meat @ xtx_inv * n / max(n - k_v, 1)
+
+    se_v = np.sqrt(np.diag(cov))
+    t_v = np.divide(beta_v, se_v,
+                    out=np.full_like(beta_v, np.nan), where=se_v > 0)
+    with np.errstate(invalid="ignore"):
+        p_v = 2 * stats.t.sf(np.abs(t_v), df=n - k_v)
+
+    beta = np.zeros(k + 1)
+    se = np.full(k + 1, np.nan)
+    t = np.full(k + 1, np.nan)
+    p = np.full(k + 1, np.nan)
+    beta[0], se[0], t[0], p[0] = beta_v[0], se_v[0], t_v[0], p_v[0]
+    idx = np.where(valid)[0] + 1
+    beta[idx], se[idx], t[idx], p[idx] = beta_v[1:], se_v[1:], t_v[1:], p_v[1:]
+    return {"beta": beta, "se": se, "t": t, "p": p}
+
+
+def bh_correct(pvals: list[float]) -> np.ndarray:
+    """Benjamini-Hochberg 调整后 p 值；nan 原样透传且不参与排名"""
+    p = np.asarray(pvals, dtype=float)
+    out = np.full(p.shape, np.nan)
+    ok = ~np.isnan(p)
+    pv = p[ok]
+    m = len(pv)
+    if m == 0:
+        return out
+
+    order = np.argsort(pv)
+    ranked = pv[order] * m / np.arange(1, m + 1)
+    ranked = np.minimum.accumulate(ranked[::-1])[::-1]
+    adj = np.empty(m)
+    adj[order] = np.minimum(ranked, 1.0)
+    out[ok] = adj
+    return out
+
+
+def quantile_groups(values: np.ndarray, n_groups: int = 3) -> np.ndarray:
+    """按分位数分档，返回 0..n_groups-1 的标签"""
+    v = np.asarray(values, dtype=float)
+    edges = np.quantile(v, np.arange(1, n_groups) / n_groups)
+    return np.searchsorted(edges, v, side="right").astype(int)
+
+
+def bootstrap_ci(values: np.ndarray, stat=np.mean, n_boot: int = 2000,
+                 seed: int = 42, alpha: float = 0.05) -> tuple[float, float]:
+    """有放回 bootstrap 置信区间，nan 先剔除"""
+    v = np.asarray(values, dtype=float)
+    v = v[~np.isnan(v)]
+    if len(v) == 0:
+        return float("nan"), float("nan")
+
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(v), size=(n_boot, len(v)))
+    boots = np.array([stat(v[i]) for i in idx])
+    lo, hi = np.quantile(boots, [alpha / 2, 1 - alpha / 2])
+    return float(lo), float(hi)

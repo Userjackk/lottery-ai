@@ -3,7 +3,8 @@ import numpy as np
 
 from ssq.prize_data import parse_prize_record
 from ssq.heat import (
-    FEATURE_KEYS, P1, P2, combo_features, has_arithmetic_pattern, heat_index,
+    FEATURE_KEYS, P1, P2, bh_correct, bootstrap_ci, combo_features,
+    has_arithmetic_pattern, heat_index, ols_hc1, quantile_groups,
 )
 
 _SAMPLE = {
@@ -101,3 +102,69 @@ def test_combo_features_repeat_prev_counts_overlap():
 def test_combo_features_keys_match_constant():
     f = combo_features([2, 10, 16, 22, 26, 30], blue=8)
     assert set(f.keys()) == set(FEATURE_KEYS)
+
+
+def test_ols_recovers_known_coefficient():
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(500, 1))
+    y = 3.0 + 2.0 * x[:, 0] + rng.normal(scale=0.1, size=500)
+    fit = ols_hc1(x, y)
+    assert abs(fit["beta"][0] - 3.0) < 0.05
+    assert abs(fit["beta"][1] - 2.0) < 0.05
+    assert fit["p"][1] < 1e-10
+
+
+def test_ols_no_effect_has_large_p():
+    """独立随机 x/y：5 个种子中至少 4 个不显著（单种子可能偶然显著）"""
+    large = 0
+    for seed in range(5):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(size=(500, 1))
+        y = rng.normal(size=500)
+        if ols_hc1(x, y)["p"][1] > 0.05:
+            large += 1
+    assert large >= 4
+
+
+def test_ols_zero_variance_column_returns_nan():
+    """X 含零方差列时不得抛异常，该列输出为 nan"""
+    rng = np.random.default_rng(2)
+    x = np.column_stack([rng.normal(size=50), np.ones(50)])
+    y = rng.normal(size=50)
+    fit = ols_hc1(x, y)
+    assert np.isnan(fit["se"][2])
+    assert np.isnan(fit["p"][2])
+    assert fit["beta"][2] == 0.0
+
+
+def test_bh_correct_simple_values():
+    adj = bh_correct([0.01, 0.02, 0.03, 0.04])
+    assert np.allclose(adj, [0.04, 0.04, 0.04, 0.04])
+
+
+def test_bh_correct_monotone_and_bounded():
+    rng = np.random.default_rng(3)
+    p = rng.uniform(size=40)
+    adj = bh_correct(p.tolist())
+    assert (adj >= p - 1e-12).all()
+    assert (adj <= 1.0 + 1e-12).all()
+
+
+def test_bh_correct_passes_nan_through():
+    adj = bh_correct([0.01, float("nan"), 0.04])
+    assert np.isnan(adj[1])
+    assert not np.isnan(adj[0]) and not np.isnan(adj[2])
+
+
+def test_quantile_groups_three_balanced():
+    g = quantile_groups(np.arange(300.0), n_groups=3)
+    assert set(g) == {0, 1, 2}
+    assert abs((g == 0).sum() - 100) <= 1
+    assert abs((g == 2).sum() - 100) <= 1
+
+
+def test_bootstrap_ci_contains_mean():
+    rng = np.random.default_rng(4)
+    v = rng.normal(loc=1.5, size=200)
+    lo, hi = bootstrap_ci(v, n_boot=1000, seed=42)
+    assert lo < v.mean() < hi
