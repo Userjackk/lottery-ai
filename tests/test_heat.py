@@ -259,6 +259,9 @@ def test_format_feature_table_has_all_features_and_direction():
     assert "small_count" in text
     # 效应方向要能看见符号
     assert "+" in text
+    # 只有 small_count 有真实效应，它必须被判为显著(正)，否则是列下标错位
+    line = next(l for l in text.splitlines() if l.startswith("| small_count"))
+    assert "显著(正)" in line
 
 
 def test_format_feature_table_marks_insignificant():
@@ -274,3 +277,31 @@ def test_format_report_contains_uniformity_and_top_draws():
     assert "1.02" in text
     assert "TABLE" in text
     assert "2026" in text
+
+
+def test_feature_table_is_gbk_encodable():
+    """Windows 控制台是 GBK，表格里不得出现 U+2212 之类无法编码的字符"""
+    rows = _synthetic_rows(n=300, effect=0.4)
+    text = format_feature_table(rows, FEATURE_KEYS)
+    text.encode("gbk")
+
+
+def test_feature_table_handles_skewed_binary_feature():
+    """极度偏斜的二元特征会出现空分档，不得输出 nan 或抛异常"""
+    rows = _synthetic_rows(n=300, effect=0.3)
+    for i, r in enumerate(rows):
+        r["has_arith3"] = 1.0 if i < 8 else 0.0
+    text = format_feature_table(rows, FEATURE_KEYS)
+    line = next(l for l in text.splitlines() if l.startswith("| has_arith3"))
+    assert "nan" not in line.lower()
+    assert "—" in line
+
+
+def test_feature_table_has_crosscheck_section():
+    """共线时单变量与多变量可能给出相反符号，必须报出来"""
+    rows = _synthetic_rows(n=300, effect=0.4)
+    text = format_feature_table(rows, FEATURE_KEYS)
+    assert "交叉核对" in text
+    cross = text.split("### 交叉核对")[1]
+    line = next(l for l in cross.splitlines() if l.startswith("| small_count |"))
+    assert "一致" in line

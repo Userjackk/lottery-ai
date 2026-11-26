@@ -64,10 +64,12 @@ def format_feature_table(rows: list[dict], feature_keys: list[str],
     cols.append(np.array([_weekday_of(r.get("date", "")) for r in usable]))
 
     fit = ols_hc1(np.column_stack(cols), y)
-    p_adj = bh_correct([fit["p"][1 + i] for i in range(len(feature_keys))])
+    # X 列 = [log_sales, 各特征..., year, weekday]；beta 额外多一个截距
+    # 故第 i 个特征对应 beta/p 的下标 2 + i
+    p_adj = bh_correct([fit["p"][2 + i] for i in range(len(feature_keys))])
 
     lines = [
-        "| 特征 | 低档 logH2 | 中档 logH2 | 高档 logH2 | 高档−低档 | 95% CI | β | p(BH) | 判定 |",
+        "| 特征 | 低档 logH2 | 中档 logH2 | 高档 logH2 | 高档-低档 | 95% CI | β | p(BH) | 判定 |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     none = "—"
@@ -84,10 +86,16 @@ def format_feature_table(rows: list[dict], feature_keys: list[str],
             means.append(f"{sub.mean():+.3f}" if len(sub) else none)
 
         lo_v, hi_v = y[g == 0], y[g == n_groups - 1]
-        diff = float(hi_v.mean() - lo_v.mean())
-        ci_lo, ci_hi = _bootstrap_diff_ci(hi_v, lo_v)
+        # 极度偏斜的特征会出现空分档（如 95% 取 0），此时不报档间差
+        if len(lo_v) >= 2 and len(hi_v) >= 2:
+            diff = float(hi_v.mean() - lo_v.mean())
+            ci_lo, ci_hi = _bootstrap_diff_ci(hi_v, lo_v)
+            diff_s = f"{diff:+.3f}"
+            ci_s = f"[{ci_lo:+.3f}, {ci_hi:+.3f}]"
+        else:
+            diff_s = ci_s = none
 
-        beta = float(fit["beta"][1 + i])
+        beta = float(fit["beta"][2 + i])
         pv = float(p_adj[i])
         if np.isnan(pv):
             judge = "无方差"
@@ -99,9 +107,40 @@ def format_feature_table(rows: list[dict], feature_keys: list[str],
             judge = "不显著"
 
         lines.append(
-            f"| {k} | {means[0]} | {means[1]} | {means[2]} | {diff:+.3f} | "
-            f"[{ci_lo:+.3f}, {ci_hi:+.3f}] | {beta:+.4f} | {pv:.4f} | {judge} |"
+            f"| {k} | {means[0]} | {means[1]} | {means[2]} | {diff_s} | "
+            f"{ci_s} | {beta:+.4f} | {pv:.4f} | {judge} |"
         )
+
+    log_sales, year_col, wd_col = cols[0], cols[-2], cols[-1]
+    uni_beta, uni_p = [], []
+    for k in feature_keys:
+        f = np.array([float(r.get(k, 0.0)) for r in usable])
+        if np.std(f) == 0:
+            uni_beta.append(np.nan)
+            uni_p.append(np.nan)
+            continue
+        fit1 = ols_hc1(np.column_stack([log_sales, f, year_col, wd_col]), y)
+        uni_beta.append(float(fit1["beta"][2]))
+        uni_p.append(float(fit1["p"][2]))
+    uni_adj = bh_correct(uni_p)
+
+    lines.append("")
+    lines.append("### 交叉核对（单变量 vs 多变量，控制变量相同）")
+    lines.append("")
+    lines.append("| 特征 | 单变量 β | 单变量 p(BH) | 多变量 β | 一致性 |")
+    lines.append("|---|---|---|---|---|")
+    for i, k in enumerate(feature_keys):
+        mb = float(fit["beta"][2 + i])
+        if np.isnan(uni_beta[i]):
+            lines.append(f"| {k} | {none} | {none} | {mb:+.4f} | 无方差 |")
+            continue
+        ub, up = uni_beta[i], float(uni_adj[i])
+        if ub * mb < 0:
+            agree = "相反(疑共线)"
+        else:
+            agree = "一致"
+        lines.append(f"| {k} | {ub:+.4f} | {up:.4g} | {mb:+.4f} | {agree} |")
+
     return "\n".join(lines)
 
 
